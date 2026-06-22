@@ -88,13 +88,31 @@ def compute(text):
     Z = r2(X + Attn); Zn = r2(rmsnorm(Z))
     silu = lambda x: x / (1 + np.exp(-x))
     F = r2((silu(Zn @ Wg) * (Zn @ Wu)) @ Wd); Y = r2(Z + F); Yn = r2(rmsnorm(Y))
-    # illustrative LM head over a small demo vocab
-    vocab = ["CEO", "chief", "leadership", "board", "results", "market", "weather", "team"]
-    hv = _rng(WSEED + 1); Wvoc = r2(hv.uniform(-.4, .4, (len(vocab), D_MODEL)))
-    logits = r2(Wvoc @ Yn[-1]); probs = r2(_softmax(logits.reshape(1, -1)).flatten())
+
+    # --- which earlier tokens does the LAST position attend to? (averaged over heads) ---
+    A_avg = np.mean(np.stack(A_heads, axis=0), axis=0)  # n x n
+    last_attn = A_avg[-1]
+    att_order = np.argsort(-last_attn)
+    top_attended = [(toks[i].strip() or toks[i], float(last_attn[i]))
+                    for i in att_order if last_attn[i] > 0][:4]
+
+    # --- illustrative LM head: project the final state onto the SENTENCE'S OWN vocabulary ---
+    # (untrained head; the candidate words come from the user's sentence so the output is relevant)
+    words = []
+    for t in toks:
+        w = t.strip()
+        if w and any(c.isalnum() for c in w) and w.lower() not in {x.lower() for x in words}:
+            words.append(w)
+    if not words:
+        words = ["(none)"]
+    vocab = words
+    Wvoc = r2(np.array([_embed(w) for w in vocab]))
+    logits = r2(Wvoc @ Yn[-1])
+    probs = r2(_softmax(logits.reshape(1, -1)).flatten())
     order = np.argsort(-probs)
-    topk = [(vocab[i], float(probs[i])) for i in order[:5]]
+    topk = [(vocab[i], float(probs[i])) for i in order[:min(5, len(vocab))]]
     return dict(tokens=toks, tname=tname, n=n, X=X, Wq=Wq, Wk=Wk, Wv=Wv, Wo=Wo,
                 Wg=Wg, Wu=Wu, Wd=Wd, Xn=Xn, Q=Q, K=K, V=V, Qr=Qr, Kr=Kr,
                 S_heads=S_heads, A_heads=A_heads, O_heads=O_heads, Ocat=Ocat, Attn=Attn,
-                Z=Z, Zn=Zn, F=F, Y=Y, Yn=Yn, vocab=vocab, logits=logits, probs=probs, topk=topk)
+                Z=Z, Zn=Zn, F=F, Y=Y, Yn=Yn, vocab=vocab, logits=logits, probs=probs,
+                topk=topk, top_attended=top_attended)
