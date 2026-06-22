@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 from core import compute
 from pdfgen import build_pdf
+from predictor import predict_next, label as _plabel
 
 st.set_page_config(page_title="Transformer Math Explorer", page_icon="🧮", layout="wide")
 
@@ -67,7 +68,8 @@ with st.sidebar:
         "- Weights are **fixed illustrative** numbers — a real model *learns* them.\n"
         "- Embeddings are **deterministic per token** (same word → same vector).\n"
         "- Everything is rounded to 2 decimals.\n"
-        "- The final next-word head is an **untrained demo** over a small vocabulary."
+        "- The **8-module math** uses a tiny *untrained* toy model (for intuition).\n"
+        "- The **final next-word prediction** is a *real* trained model — **DistilGPT-2**."
     )
     st.markdown("Made as a companion to *“What Is an LLM, and What Are Transformer Models?”*")
 
@@ -76,6 +78,8 @@ sent = st.text_input("Your sentence",
                      help="Up to 12 tokens are shown so the matrices stay readable.")
 
 r = compute(sent)
+with st.spinner("Loading DistilGPT-2 for the real next-word prediction (first run downloads the model)…"):
+    preds, perr = predict_next(sent, k=10)
 
 c1, c2 = st.columns([3, 1])
 with c1:
@@ -85,7 +89,7 @@ with c1:
         f"padding:2px 8px;margin:2px;display:inline-block;font-family:monospace'>{t.strip() or '␣'}</span>"
         for t in r['tokens']), unsafe_allow_html=True)
 with c2:
-    st.download_button("⬇️ Download full PDF", data=build_pdf(r),
+    st.download_button("⬇️ Download full PDF", data=build_pdf(r, preds),
                        file_name="transformer-math.pdf", mime="application/pdf",
                        use_container_width=True)
 
@@ -131,6 +135,10 @@ for h in range(len(r['A_heads'])):
 
 st.markdown("**(d) Concatenate heads and project with $W_O$:** $\\;\\text{Attn}=[\\,O^{(1)}|O^{(2)}\\,]\\,W_O$.")
 st.latex(bml(r['Ocat'], r"O_{\text{cat}}", r['tokens'])); st.latex(bml(r['Attn'], r"\text{Attn}", r['tokens']))
+if r.get('top_attended'):
+    _att = ", ".join(f"“{w}” ({p:.2f})" for w, p in r['top_attended'])
+    st.info(f"**For your sentence**, the last position attends most to: {_att}. "
+            "(This updates with whatever sentence you type.)")
 
 # Module 4
 st.subheader("Module 4 — Dropout")
@@ -159,23 +167,35 @@ st.subheader("Module 8 — Residual → output")
 st.markdown("A second residual finishes the block: $Y = Z + F$. This becomes the input to the next block.")
 st.latex(bml(r['Y'], "Y", r['tokens']))
 
-# Output
-st.subheader("Output — final norm + LM head")
-st.markdown("After the final block, normalize and project the **last token's** vector onto a vocabulary, "
-            "then softmax. Here the vocabulary is **your sentence's own words** and the head is **untrained**, "
-            "so this shows the *mechanism* (logits → softmax) — not a real next-word prediction.")
-if r.get('top_attended'):
-    att = ", ".join(f"“{w}” ({p:.2f})" for w, p in r['top_attended'])
-    st.info(f"**For your sentence**, the final position attends most to: {att}. "
-            "(This updates with whatever sentence you type.)")
-top = r['topk']
-cols = st.columns(max(1, len(top)))
-for col, (tok, p) in zip(cols, top):
-    col.metric(tok, f"{p*100:.0f}%")
-st.bar_chart({"probability": {v: float(p) for v, p in zip(r['vocab'], r['probs'])}})
+# Output — REAL next-word prediction
+st.subheader("Output — predicting the next word")
+st.markdown(
+    "After the final block, the model normalizes the last token's vector, projects it onto the **whole vocabulary**, "
+    "and softmax turns the scores into a probability for **every possible next word**. "
+    "The toy block above is *untrained* (its numbers are illustrative), so to show a **genuine** prediction we run "
+    "your sentence through a small **trained** model — DistilGPT-2 (82M parameters):")
+
+if perr:
+    st.warning(f"Couldn't run the trained model right now ({perr}). The step-by-step toy math above is unaffected.")
+elif preds:
+    st.markdown(f"**Most likely next word:**  “{_plabel(preds[0][0]).lstrip('␣')}”  ({preds[0][1]*100:.1f}%)")
+    top5 = preds[:5]
+    cols = st.columns(len(top5))
+    for col, (w, p) in zip(cols, top5):
+        col.metric(_plabel(w), f"{p*100:.1f}%")
+    data = {}
+    for w, p in preds:
+        key = _plabel(w)
+        while key in data:
+            key += " "
+        data[key] = float(p)
+    st.bar_chart({"probability": data})
+    st.caption("These are **real** next-token probabilities from DistilGPT-2. (“␣” marks a leading space, i.e. the "
+               "start of a new word.) The step-by-step matrices above use a tiny untrained d=8 model only to show "
+               "the mechanics — the same equations run at billions-of-parameters scale in models like GPT, Claude and Gemini.")
 
 st.divider()
-st.download_button("⬇️ Download this as a PDF", data=build_pdf(r),
+st.download_button("⬇️ Download this as a PDF", data=build_pdf(r, preds),
                    file_name="transformer-math.pdf", mime="application/pdf")
 st.caption("Weights are illustrative, not from a trained model. The same equations run at "
            "billions-of-parameters scale in real LLMs like GPT, Claude and Gemini.")
